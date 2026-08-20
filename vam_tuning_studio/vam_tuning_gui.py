@@ -283,44 +283,108 @@ def generate_projection_video(run_id: str, geom_name: str, rpm: float = 9.0, dur
     opts = vam.optimize.Options(**opt_kwargs)
     sino, recon, err = vam.optimize.optimize(target_geo, proj_geo, opts)
 
-    # Projector Canvas (1080p Full HD) & Tomo Scaling Engine
-    proj_w, proj_h = 1920, 1080
+    # ── Tomo-Native High-Fidelity Video Maker Engine ──
+    proj_px_w, proj_px_h = 1920, 1080
+    proj_width_mm = 30.0
+    res_vox = int(best_row.get("resolution", 75))
+
+    # 1. Projector px-per-voxel true scale (clamped to fit canvas, matching Tomo)
     arr = sino.array
     n_r, n_z = arr.shape[0], arr.shape[2]
-    fit_scale = min(proj_h / max(n_z, 1), proj_w / max(n_r, 1)) * 0.95
+    intended_scale = (res_vox * proj_px_w) / max(proj_width_mm, 1e-3)
+    fit_scale = min(proj_px_h / max(n_z, 1), proj_px_w / max(n_r, 1)) * 0.98
+    true_scale = min(intended_scale, fit_scale)
 
+    # 2. Vertical offset
+    v_offset_mm = float(transforms.get("tz", 0.0))
+    mm_per_px = proj_width_mm / max(proj_px_w, 1)
+    off_px = -(v_offset_mm / max(mm_per_px, 1e-9))
+    s_v = n_z * true_scale
+    max_off = max(0.0, (proj_px_h - s_v) / 2.0 - 1)
+    v_offset_px = int(round(max(-max_off, min(max_off, off_px))))
+
+    # 3. Process sinogram through ImageConfig & ImageSeq
     iconfig = vam.imagesequence.ImageConfig(
-        image_dims=(proj_w, proj_h),
-        size_scale=fit_scale,
-        v_offset=0,
+        image_dims=(int(proj_px_w), int(proj_px_h)),
+        rotated_angle=0,
+        size_scale=true_scale,
+        v_offset=v_offset_px,
         normalization_percentile=99.9,
+        intensity_scale=1.0,
     )
     image_seq = vam.imagesequence.ImageSeq(
         image_config=iconfig, sinogram=sino
     )
 
     n_images = len(image_seq.images)
-    fps = 30
+    fps = 30.0
     total_frames = max(1, int(round(fps * duration_sec)))
-    deg_per_sec = rpm * 360.0 / 60.0
+    deg_per_frame = rpm * 6.0 / fps
+    W = iconfig.N_u
+    H = iconfig.N_v
+
     video_filename = f"projection_{geom_name}_{rpm:.1f}rpm_{int(duration_sec)}s.mp4"
     video_path = os.path.join(videos_dir, video_filename)
 
-    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    vw = cv2.VideoWriter(video_path, fourcc, fps, (proj_w, proj_h))
+    def _get_frame_rgb(k):
+        angle = (k * deg_per_frame) % 360.0
+        idx = int(angle / 360.0 * n_images) % n_images
+        # np.flipud to match DLP projector bottom-origin optics
+        g = np.flipud(image_seq.images[idx])
+        return np.repeat(g[:, :, None], 3, axis=2)
 
-    for f_idx in range(total_frames):
-        t_sec = f_idx / fps
-        angle_deg = (t_sec * deg_per_sec) % 360.0
-        ang_idx = int(round((angle_deg / 360.0) * n_images)) % n_images
+    # Fast stream-copy loop if full rotations match
+    fpr = (60.0 * fps / abs(rpm)) if abs(rpm) > 1e-9 else 0.0
+    n_unique = int(round(fpr))
+    n_loops = int(round(total_frames / n_unique)) if n_unique > 0 else 0
+    fast = (n_unique >= 2 and n_loops >= 2 and abs(fpr - n_unique) < 1e-3)
 
-        # DLP vertical flip (matches bottom-origin projector projection)
-        img_gray = np.flipud(image_seq.images[ang_idx])
-        img_bgr = cv2.cvtColor(img_gray, cv2.COLOR_GRAY2BGR)
-        vw.write(img_bgr)
+    try:
+        import imageio_ffmpeg
+        import subprocess
 
-    vw.release()
-    return video_filename, os.path.getsize(video_path)
+        ff_codec = "libx264"
+        if fast:
+            seg = video_path + ".seg.mp4"
+            writer = imageio_ffmpeg.write_frames(
+                seg, (W, H), fps=fps, codec=ff_codec,
+                pix_fmt_in="rgb24", pix_fmt_out="yuv420p", macro_block_size=2, quality=6,
+            )
+            writer.send(None)
+            for k in range(n_unique):
+                writer.send(np.ascontiguousarray(_get_frame_rgb(k), dtype=np.uint8).tobytes())
+            writer.close()
+
+            exe = imageio_ffmpeg.get_ffmpeg_exe()
+            subprocess.run(
+                [exe, "-y", "-stream_loop", str(n_loops - 1), "-i", seg,
+                 "-c", "copy", "-fflags", "+genpts", video_path],
+                check=True, capture_output=True)
+            try:
+                if os.path.exists(seg):
+                    os.remove(seg)
+            except Exception:
+                pass
+            return video_filename, os.path.getsize(video_path)
+
+        writer = imageio_ffmpeg.write_frames(
+            video_path, (W, H), fps=fps, codec=ff_codec,
+            pix_fmt_in="rgb24", pix_fmt_out="yuv420p", macro_block_size=2, quality=6,
+        )
+        writer.send(None)
+        for k in range(total_frames):
+            writer.send(np.ascontiguousarray(_get_frame_rgb(k), dtype=np.uint8).tobytes())
+        writer.close()
+        return video_filename, os.path.getsize(video_path)
+
+    except Exception as e:
+        print(f"[VideoMaker] imageio-ffmpeg failed ({e}); falling back to OpenCV")
+        vw = cv2.VideoWriter(video_path, cv2.VideoWriter_fourcc(*'mp4v'), int(fps), (W, H))
+        for k in range(total_frames):
+            f_bgr = cv2.cvtColor(_get_frame_rgb(k)[:, :, 0], cv2.COLOR_GRAY2BGR)
+            vw.write(f_bgr)
+        vw.release()
+        return video_filename, os.path.getsize(video_path)
 
 # ── Complete HTML / 3D Three.js Slicer Interface ──────────────────────────────
 HTML_TEMPLATE = r"""
