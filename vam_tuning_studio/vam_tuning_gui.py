@@ -285,17 +285,20 @@ def generate_projection_video(run_id: str, geom_name: str, rpm: float = 9.0, dur
 
     # ── Tomo-Native High-Fidelity Video Maker Engine ──
     proj_px_w, proj_px_h = 1920, 1080
-    proj_width_mm = 30.0
+    proj_width_mm = 108.0   # Standard VAM projector FOV width in mm (matching Tomo)
     res_vox = int(best_row.get("resolution", 75))
 
-    # 1. Projector px-per-voxel true scale (clamped to fit canvas, matching Tomo)
+    # Physical voxel pitch in mm per voxel
+    voxel_pitch_mm = MAX_PRINTABLE_DIAMETER_MM / max(res_vox, 1)   # 25.0mm / 75 = 0.333 mm/vox
+
+    # 1. Projector px-per-voxel true scale (matching Tomo's physical optics)
     arr = sino.array
     n_r, n_z = arr.shape[0], arr.shape[2]
-    intended_scale = (res_vox * proj_px_w) / max(proj_width_mm, 1e-3)
-    fit_scale = min(proj_px_h / max(n_z, 1), proj_px_w / max(n_r, 1)) * 0.98
-    true_scale = min(intended_scale, fit_scale)
+    true_scale = (voxel_pitch_mm * proj_px_w) / max(proj_width_mm, 1e-3)
+    fit_scale = min(proj_px_h / max(n_z, 1), proj_px_w / max(n_r, 1)) * 0.95
+    true_scale = min(true_scale, fit_scale)
 
-    # 2. Vertical offset
+    # 2. Vertical offset in projector pixels
     v_offset_mm = float(transforms.get("tz", 0.0))
     mm_per_px = proj_width_mm / max(proj_px_w, 1)
     off_px = -(v_offset_mm / max(mm_per_px, 1e-9))
