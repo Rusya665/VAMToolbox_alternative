@@ -126,66 +126,67 @@ def get_cached_geometry(geom_name: str, resolution: int = DEFAULT_RESOLUTION):
 
     return _GEOMETRY_CACHE[cache_key]
 
-def compute_detailed_metrics(target_geo, recon_array):
-    recon = np.copy(recon_array)
-    recon_max = np.max(recon)
-    if recon_max > 0:
-        recon = recon / recon_max
+def compute_detailed_metrics(target_geo, recon_array, d_l: float = 0.60):
+    """
+    Tomo-identical dose quality metric computation.
+    """
+    r = np.asarray(recon_array, dtype=np.float32)
+    tg = np.asarray(target_geo.array)
+    rmax = float(r.max()) or 1.0
+    r = r / rmax  # normalized dose [0, 1]
 
-    gel_inds = target_geo.gel_inds
-    void_inds = target_geo.void_inds
+    tgt = tg > (0.5 * float(tg.max()) if tg.max() > 0 else 0.5)
+    nX, nY = r.shape[0], r.shape[1]
+    yy, xx = np.ogrid[:nX, :nY]
+    circle = (((xx - nX / 2.0) ** 2 + (yy - nY / 2.0) ** 2) <= (min(nX, nY) / 2.0) ** 2)[..., None]
 
-    gel_vals = recon[gel_inds]
-    void_vals = recon[void_inds]
-    num_total = len(gel_vals) + len(void_vals)
+    in_d = r[tgt]
+    out_d = r[(~tgt) & circle]
 
-    min_gel = float(np.min(gel_vals))
-    max_gel = float(np.max(gel_vals))
-    mean_gel = float(np.mean(gel_vals))
-    std_gel = float(np.std(gel_vals))
-    p5_gel = float(np.percentile(gel_vals, 5))
+    T = float(d_l)
+    in_under = float((in_d < T).mean()) if in_d.size else 0.0
+    out_over = float((out_d >= T).mean()) if out_d.size else 0.0
 
-    min_void = float(np.min(void_vals))
-    max_void = float(np.max(void_vals))
-    mean_void = float(np.mean(void_vals))
-    std_void = float(np.std(void_vals))
-    p95_void = float(np.percentile(void_vals, 95))
+    # Total volumetric error = voxels on the WRONG side of the gel threshold (in % and ratio)
+    ver_ratio = (in_under * in_d.size + out_over * out_d.size) / max(1, in_d.size + out_d.size)
+    ver_pct = ver_ratio * 100.0
 
-    # 1. Volumetric Error Rate (VER)
-    n_overlap = int(np.sum(void_vals >= min_gel))
-    ver = float(n_overlap / num_total)
+    in_min = float(in_d.min()) if in_d.size else 0.0
+    in_mean = float(in_d.mean()) if in_d.size else 0.0
+    in_std = float(in_d.std()) if in_d.size else 0.0
+    p5_gel = float(np.percentile(in_d, 5)) if in_d.size else 0.0
 
-    # 2. Process Window (PW)
-    pw = float(min_gel - max_void)
+    out_max = float(out_d.max()) if out_d.size else 0.0
+    out_mean = float(out_d.mean()) if out_d.size else 0.0
+    out_std = float(out_d.std()) if out_d.size else 0.0
+    p95_void = float(np.percentile(out_d, 95)) if out_d.size else 0.0
 
-    # 3. Coefficient of Variance (CV)
-    cv = float(std_gel / mean_gel) if mean_gel > 1e-6 else 1.0
+    # Process Window (positive is print-ready margin)
+    pw = in_min - out_max
 
-    # 4. In-part Dose Range (IPDR)
-    ipdr = float(max_gel - min_gel)
+    # Contrast & Uniformity
+    contrast = (in_mean / max(1e-6, out_mean)) if out_mean > 0 else 1.0
+    cv = (in_std / max(1e-6, in_mean))
 
-    # 5. Dose Contrast
-    contrast = float(mean_gel / max(1e-6, mean_void))
-
-    # Multi-objective fitness
-    fitness = float(3.0 * (1.0 - ver) + 2.0 * pw - 1.0 * cv + 0.5 * min(4.0, contrast))
+    # Multi-objective fitness cleanly driving toward VER -> 0.0% and PW > 0
+    fitness = float(6.0 * (1.0 - ver_ratio) + 3.0 * pw - 0.5 * in_std + 0.2 * min(5.0, contrast))
 
     return {
-        "ver": ver,
+        "ver": ver_ratio,
+        "ver_pct": ver_pct,
         "pw": pw,
         "cv": cv,
-        "ipdr": ipdr,
         "contrast": contrast,
         "fitness": fitness,
-        "min_gel": min_gel,
-        "max_gel": max_gel,
-        "mean_gel": mean_gel,
-        "std_gel": std_gel,
+        "min_gel": in_min,
+        "max_gel": float(in_d.max()) if in_d.size else 1.0,
+        "mean_gel": in_mean,
+        "std_gel": in_std,
         "p5_gel": p5_gel,
-        "min_void": min_void,
-        "max_void": max_void,
-        "mean_void": mean_void,
-        "std_void": std_void,
+        "min_void": float(out_d.min()) if out_d.size else 0.0,
+        "max_void": out_max,
+        "mean_void": out_mean,
+        "std_void": out_std,
         "p95_void": p95_void,
     }
 
@@ -229,7 +230,7 @@ def run_single_optimization_on_target(target_geo, geom_name: str, params: dict, 
     t_run = time.perf_counter() - t_start
 
     final_err = float(err[~np.isnan(err)][-1]) if err is not None and len(err) > 0 and np.any(~np.isnan(err)) else 0.0
-    metrics = compute_detailed_metrics(target_geo, recon.array)
+    metrics = compute_detailed_metrics(target_geo, recon.array, d_l=d_l)
     mem_mb = psutil.Process().memory_info().rss / (1024 * 1024)
 
     record = {

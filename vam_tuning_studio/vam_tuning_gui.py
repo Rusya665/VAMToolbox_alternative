@@ -1901,7 +1901,7 @@ HTML_TEMPLATE = r"""
             physDiv.innerHTML = `
                 <div class="setting-item"><span class="k">Projector Resolution:</span><span class="v">1920 × 1080 px (1080p)</span></div>
                 <div class="setting-item"><span class="k">Optical Beam / Collimation:</span><span class="v">Telecentric (Parallel, TR=∞)</span></div>
-                <div class="setting-item"><span class="k">Projector FOV Width:</span><span class="v">30.0 mm</span></div>
+                <div class="setting-item"><span class="k">Projector FOV Width:</span><span class="v">108.0 mm</span></div>
                 <div class="setting-item"><span class="k">Physical Resin Vial:</span><span class="v">30.0 mm dia × 60.0 mm</span></div>
                 <div class="setting-item"><span class="k">Safe Printable Margin:</span><span class="v" style="color: var(--accent-emerald);">25.0 mm dia × 50.0 mm</span></div>
                 <div class="setting-item"><span class="k">Resin Refractive Index (n):</span><span class="v">1.48 (vial_correction = ON)</span></div>
