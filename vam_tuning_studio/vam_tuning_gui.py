@@ -283,32 +283,40 @@ def generate_projection_video(run_id: str, geom_name: str, rpm: float = 9.0, dur
     opts = vam.optimize.Options(**opt_kwargs)
     sino, recon, err = vam.optimize.optimize(target_geo, proj_geo, opts)
 
+    # Projector Canvas (1080p Full HD) & Tomo Scaling Engine
+    proj_w, proj_h = 1920, 1080
+    arr = sino.array
+    n_r, n_z = arr.shape[0], arr.shape[2]
+    fit_scale = min(proj_h / max(n_z, 1), proj_w / max(n_r, 1)) * 0.95
+
+    iconfig = vam.imagesequence.ImageConfig(
+        image_dims=(proj_w, proj_h),
+        size_scale=fit_scale,
+        v_offset=0,
+        normalization_percentile=99.9,
+    )
+    image_seq = vam.imagesequence.ImageSeq(
+        image_config=iconfig, sinogram=sino
+    )
+
+    n_images = len(image_seq.images)
     fps = 30
-    total_frames = int(fps * duration_sec)
+    total_frames = max(1, int(round(fps * duration_sec)))
     deg_per_sec = rpm * 360.0 / 60.0
     video_filename = f"projection_{geom_name}_{rpm:.1f}rpm_{int(duration_sec)}s.mp4"
     video_path = os.path.join(videos_dir, video_filename)
 
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    frame_size = (480, 480)
-    vw = cv2.VideoWriter(video_path, fourcc, fps, frame_size)
-
-    sino_raw = sino.array
-    s_min, s_max = np.min(sino_raw), np.max(sino_raw)
-    sino_norm = ((sino_raw - s_min) / (s_max - s_min + 1e-6) * 255).astype(np.uint8)
+    vw = cv2.VideoWriter(video_path, fourcc, fps, (proj_w, proj_h))
 
     for f_idx in range(total_frames):
         t_sec = f_idx / fps
         angle_deg = (t_sec * deg_per_sec) % 360.0
-        ang_idx = int(round((angle_deg / 360.0) * n_angles)) % n_angles
+        ang_idx = int(round((angle_deg / 360.0) * n_images)) % n_images
 
-        proj_2d = sino_norm[:, ang_idx, :].T
-        proj_up = cv2.resize(proj_2d, frame_size, interpolation=cv2.INTER_NEAREST)
-        img_bgr = cv2.cvtColor(proj_up, cv2.COLOR_GRAY2BGR)
-
-        cv2.putText(img_bgr, f"OPENCAL VAM | {geom_name.upper()} | {rpm:.1f} RPM", (14, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 200), 2, cv2.LINE_AA)
-        cv2.putText(img_bgr, f"Method: {method} | PW: {best_row['pw']:+.3f}", (14, 52), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (200, 200, 200), 1, cv2.LINE_AA)
-        cv2.putText(img_bgr, f"Angle: {angle_deg:05.1f} deg | Time: {t_sec:04.1f}s / {duration_sec:.0f}s", (14, 460), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1, cv2.LINE_AA)
+        # DLP vertical flip (matches bottom-origin projector projection)
+        img_gray = np.flipud(image_seq.images[ang_idx])
+        img_bgr = cv2.cvtColor(img_gray, cv2.COLOR_GRAY2BGR)
         vw.write(img_bgr)
 
     vw.release()
@@ -626,6 +634,65 @@ HTML_TEMPLATE = r"""
 
         .video-container { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; background: #000; border-radius: 12px; padding: 16px; border: 1px solid var(--border-color); }
         video { max-width: 100%; max-height: 480px; border-radius: 8px; box-shadow: 0 0 20px rgba(0,0,0,0.8); }
+
+        /* Modal Dialog & Tomo Settings Inspector */
+        .modal-overlay {
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(3, 7, 18, 0.88);
+            backdrop-filter: blur(10px);
+            display: none;
+            align-items: center;
+            justify-content: center;
+            z-index: 999;
+            padding: 20px;
+        }
+        .modal-overlay.active { display: flex; }
+        .modal-box {
+            background: #0f172a;
+            border: 1px solid var(--accent-cyan);
+            border-radius: 16px;
+            max-width: 920px;
+            width: 100%;
+            max-height: 90vh;
+            overflow-y: auto;
+            padding: 24px;
+            display: flex;
+            flex-direction: column;
+            gap: 18px;
+            box-shadow: 0 0 50px rgba(6, 182, 212, 0.3);
+            animation: modalFadeIn 0.2s ease-out;
+        }
+        @keyframes modalFadeIn {
+            from { opacity: 0; transform: scale(0.96); }
+            to { opacity: 1; transform: scale(1.0); }
+        }
+        .recipe-card-interactive {
+            transition: all 0.2s ease;
+            cursor: pointer;
+            position: relative;
+        }
+        .recipe-card-interactive:hover {
+            transform: translateY(-2px);
+            border-color: var(--accent-cyan) !important;
+            box-shadow: 0 0 18px rgba(6, 182, 212, 0.3);
+        }
+        .settings-grid-3 {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+            gap: 12px;
+        }
+        .setting-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 6px 10px;
+            background: rgba(17, 24, 39, 0.7);
+            border-radius: 6px;
+            font-size: 11px;
+        }
+        .setting-item .k { color: var(--text-muted); font-weight: 500; }
+        .setting-item .v { font-family: 'JetBrains Mono', monospace; font-weight: 700; color: #fff; }
 
         @media (max-width: 960px) {
             .slicer-3d-grid { grid-template-columns: 1fr !important; }
@@ -950,6 +1017,75 @@ HTML_TEMPLATE = r"""
                         </thead>
                         <tbody id="logTableBody"></tbody>
                     </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- TOMO COMPLETE SETTINGS & VIDEO INSPECTOR MODAL -->
+        <div id="recipeModalOverlay" class="modal-overlay" onclick="closeRecipeModal(event)">
+            <div class="modal-box" onclick="event.stopPropagation()">
+                <div style="display: flex; justify-content: space-between; align-items: flex-start; border-bottom: 1px solid var(--border-color); padding-bottom: 14px;">
+                    <div>
+                        <div style="display: flex; align-items: center; gap: 10px;">
+                            <span class="logo-badge" id="modalGeomBadge">OSMO</span>
+                            <h2 style="font-size: 18px; font-weight: 800; color: #fff;" id="modalTitle">Optimal Slicing Recipe</h2>
+                        </div>
+                        <p style="font-size: 11px; color: var(--text-muted); margin-top: 4px;">Complete Tomo / OpenCAL Machine Configuration & 1080p Film Generator</p>
+                    </div>
+                    <button class="btn btn-secondary" style="padding: 4px 10px; font-size: 14px;" onclick="document.getElementById('recipeModalOverlay').classList.remove('active')">✕</button>
+                </div>
+
+                <!-- 3 Setting Sections Grid -->
+                <div style="display: flex; flex-direction: column; gap: 14px;">
+                    <!-- 1. Tomo Optimizer Core Parameters -->
+                    <div style="display: flex; flex-direction: column; gap: 6px;">
+                        <span style="font-size: 11px; font-weight: 700; color: var(--accent-cyan); text-transform: uppercase;">1. Mathematical Optimizer Settings (Tomo Core)</span>
+                        <div class="settings-grid-3" id="modalOptParams"></div>
+                    </div>
+
+                    <!-- 2. Physical Optical & Resin Parameters -->
+                    <div style="display: flex; flex-direction: column; gap: 6px;">
+                        <span style="font-size: 11px; font-weight: 700; color: var(--accent-purple); text-transform: uppercase;">2. Optical & Physical Machine Setup (Tomo Slicer)</span>
+                        <div class="settings-grid-3" id="modalPhysParams"></div>
+                    </div>
+
+                    <!-- 3. Slicing Quality & Convergence Telemetry -->
+                    <div style="display: flex; flex-direction: column; gap: 6px;">
+                        <span style="font-size: 11px; font-weight: 700; color: var(--accent-emerald); text-transform: uppercase;">3. Quality Metrics & Convergence Performance</span>
+                        <div class="settings-grid-3" id="modalQualityParams"></div>
+                    </div>
+                </div>
+
+                <!-- 4. Direct 1080p Film Video Generation in Modal -->
+                <div style="background: rgba(17, 24, 39, 0.7); border: 1px solid var(--border-color); border-radius: 12px; padding: 14px; display: flex; flex-direction: column; gap: 10px;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
+                        <div>
+                            <span style="font-size: 12px; font-weight: 700; color: #fff;">🎬 Generate 1080p Projection Video from this Recipe</span>
+                            <p style="font-size: 10px; color: var(--text-muted);">Encodes calibrated 360° rotating projection sinogram for your projector.</p>
+                        </div>
+                        <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+                            <select id="modalVideoRpm" style="max-width: 140px; font-size: 11px;">
+                                <option value="9.0">9.0 RPM (Standard)</option>
+                                <option value="6.0">6.0 RPM (Slow)</option>
+                                <option value="12.0">12.0 RPM (Fast)</option>
+                            </select>
+                            <select id="modalVideoDur" style="max-width: 150px; font-size: 11px;">
+                                <option value="6.67">1 Revolution (6.7s Loop)</option>
+                                <option value="60">1 Minute (60s, 9 Cycles)</option>
+                            </select>
+                            <button id="btnModalGenVideo" class="btn btn-start" style="padding: 6px 12px;" onclick="generateVideoFromModal()">🎬 Generate & Play Film</button>
+                        </div>
+                    </div>
+
+                    <div id="modalVideoStatus" style="font-size: 11px; color: var(--accent-cyan); font-weight: 600; min-height: 14px;"></div>
+
+                    <div id="modalVideoPlayerBox" style="display: none; flex-direction: column; align-items: center; gap: 10px; background: #000; padding: 12px; border-radius: 8px; border: 1px solid var(--border-color);">
+                        <video id="modalVideoPlayer" controls autoplay loop playsinline style="max-height: 320px; width: 100%; border-radius: 6px;"></video>
+                        <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+                            <a id="modalVideoDlBtn" class="btn btn-start" href="#" download>⬇ Download MP4 Video (1080p)</a>
+                            <a id="modalManifestDlBtn" class="btn btn-secondary" href="#" download>⬇ Download Slicer JSON Profile</a>
+                        </div>
+                    </div>
                 </div>
             </div>
         </div>
@@ -1635,15 +1771,21 @@ HTML_TEMPLATE = r"""
             fetchRunData();
         }
 
+        let activeBestConfigs = {};
+        let activeModalGeom = "";
+
         function renderBestConfigs(bestMap) {
+            activeBestConfigs = bestMap;
             const container = document.getElementById('bestConfigsContainer');
             container.innerHTML = "";
             for (const [geom, rec] of Object.entries(bestMap)) {
                 const div = document.createElement('div');
+                div.className = "recipe-card-interactive";
                 div.style.background = "rgba(31, 41, 55, 0.5)";
-                div.style.padding = "10px 14px";
-                div.style.borderRadius = "8px";
+                div.style.padding = "12px 14px";
+                div.style.borderRadius = "10px";
                 div.style.border = "1px solid var(--border-color)";
+                div.onclick = () => openRecipeModal(geom);
                 div.innerHTML = `
                     <div style="display: flex; justify-content: space-between; font-weight: 700; margin-bottom: 3px;">
                         <span style="color: var(--accent-cyan); text-transform: uppercase;">${geom}</span>
@@ -1653,8 +1795,107 @@ HTML_TEMPLATE = r"""
                         Method: <b style="color: #fff;">${rec.method}</b> | Filter: <b style="color: #fff;">${rec.filter || 'None'}</b> | Angles: <b style="color: #fff;">${rec.n_angles}</b><br>
                         d_h: <b style="color: #fff;">${rec.d_h}</b> | d_l: <b style="color: #fff;">${rec.d_l}</b> | VER: <b style="color: #fff;">${(rec.ver * 100).toFixed(1)}%</b> | Contrast: <b style="color: #fff;">${rec.contrast ? rec.contrast.toFixed(1) : '-'}x</b>
                     </div>
+                    <div style="margin-top: 6px; font-size: 10px; color: var(--accent-cyan); font-weight: 700; display: flex; align-items: center; gap: 4px;">
+                        🔍 Click to view ALL Tomo settings & generate 1080p film ➔
+                    </div>
                 `;
                 container.appendChild(div);
+            }
+        }
+
+        function openRecipeModal(geom) {
+            activeModalGeom = geom;
+            const rec = activeBestConfigs[geom] || {};
+            const overlay = document.getElementById('recipeModalOverlay');
+            document.getElementById('modalTitle').innerText = `${geom.toUpperCase()} — Complete Tomo Recipe`;
+            document.getElementById('modalGeomBadge').innerText = rec.method || "OSMO";
+            document.getElementById('modalVideoStatus').innerText = "";
+            document.getElementById('modalVideoPlayerBox').style.display = "none";
+
+            // 1. Optimizer Parameters (Tomo Core)
+            const optDiv = document.getElementById('modalOptParams');
+            optDiv.innerHTML = `
+                <div class="setting-item"><span class="k">Algorithm (method):</span><span class="v" style="color: var(--accent-cyan);">${rec.method || 'OSMO'}</span></div>
+                <div class="setting-item"><span class="k">Angular Sampling (n_angles):</span><span class="v">${rec.n_angles || 180} projections</span></div>
+                <div class="setting-item"><span class="k">Filter Function (filter):</span><span class="v">${rec.filter || 'None'}</span></div>
+                <div class="setting-item"><span class="k">In-Target Gel Floor (d_h):</span><span class="v" style="color: var(--accent-emerald);">${rec.d_h != null ? rec.d_h : '0.85'}</span></div>
+                <div class="setting-item"><span class="k">Void Ceiling Limit (d_l):</span><span class="v" style="color: var(--accent-rose);">${rec.d_l != null ? rec.d_l : '0.60'}</span></div>
+                <div class="setting-item"><span class="k">Iterations (n_iter):</span><span class="v">${rec.n_iter || 15}</span></div>
+                <div class="setting-item"><span class="k">OSMO Inhibition (γ):</span><span class="v">${rec.inhibition != null ? rec.inhibition : '0.00'}</span></div>
+                <div class="setting-item"><span class="k">BCLP Band Epsilon (eps):</span><span class="v">${rec.eps != null ? rec.eps : '0.10'}</span></div>
+                <div class="setting-item"><span class="k">BCLP Lp Norm (p):</span><span class="v">${rec.p_norm != null ? rec.p_norm : '2.0'}</span></div>
+                <div class="setting-item"><span class="k">Optimizer LR (learning_rate):</span><span class="v">${rec.learning_rate != null ? rec.learning_rate : '0.010'}</span></div>
+            `;
+
+            // 2. Physical Optical & Resin Parameters (Tomo Slicer)
+            const physDiv = document.getElementById('modalPhysParams');
+            physDiv.innerHTML = `
+                <div class="setting-item"><span class="k">Projector Resolution:</span><span class="v">1920 × 1080 px (1080p)</span></div>
+                <div class="setting-item"><span class="k">Optical Beam / Collimation:</span><span class="v">Telecentric (Parallel, TR=∞)</span></div>
+                <div class="setting-item"><span class="k">Projector FOV Width:</span><span class="v">30.0 mm</span></div>
+                <div class="setting-item"><span class="k">Physical Resin Vial:</span><span class="v">30.0 mm dia × 60.0 mm</span></div>
+                <div class="setting-item"><span class="k">Safe Printable Margin:</span><span class="v" style="color: var(--accent-emerald);">25.0 mm dia × 50.0 mm</span></div>
+                <div class="setting-item"><span class="k">Resin Refractive Index (n):</span><span class="v">1.48 (vial_correction = ON)</span></div>
+                <div class="setting-item"><span class="k">Dynamic Normalization:</span><span class="v">99.9th Percentile</span></div>
+                <div class="setting-item"><span class="k">DLP Optical Coordinate:</span><span class="v">np.flipud (Bottom-Origin)</span></div>
+                <div class="setting-item"><span class="k">Optical Attenuation (μ):</span><span class="v">0.0 mm⁻¹ (Homogeneous)</span></div>
+            `;
+
+            // 3. Quality & Convergence Metrics
+            const qDiv = document.getElementById('modalQualityParams');
+            const pwVal = rec.pw != null ? rec.pw : 0;
+            const verVal = rec.ver != null ? (rec.ver * 100).toFixed(1) + "%" : "0.0%";
+            qDiv.innerHTML = `
+                <div class="setting-item"><span class="k">Process Window (PW):</span><span class="v" style="color: ${pwVal >= 0 ? 'var(--accent-emerald)' : 'var(--accent-rose)'}; font-size: 13px;">${(pwVal >= 0 ? '+' : '') + pwVal.toFixed(3)}</span></div>
+                <div class="setting-item"><span class="k">Volumetric Over-Cure (VER):</span><span class="v" style="color: ${rec.ver < 0.05 ? 'var(--accent-emerald)' : 'var(--accent-rose)'};">${verVal}</span></div>
+                <div class="setting-item"><span class="k">Peak Contrast Ratio:</span><span class="v">${rec.contrast ? rec.contrast.toFixed(2) + 'x' : '-'}</span></div>
+                <div class="setting-item"><span class="k">GPU Trial Runtime:</span><span class="v">${rec.runtime_s ? rec.runtime_s.toFixed(2) + 's' : '-'}</span></div>
+                <div class="setting-item"><span class="k">VRAM Memory Footprint:</span><span class="v">${rec.memory_mb ? rec.memory_mb.toFixed(1) + ' MB' : '-'}</span></div>
+                <div class="setting-item"><span class="k">GPU Backend:</span><span class="v" style="color: var(--accent-cyan);">ASTRA CUDA 12.x</span></div>
+            `;
+
+            overlay.classList.add('active');
+        }
+
+        function closeRecipeModal(e) {
+            if (e.target.id === 'recipeModalOverlay') {
+                document.getElementById('recipeModalOverlay').classList.remove('active');
+            }
+        }
+
+        async function generateVideoFromModal() {
+            const rpm = document.getElementById('modalVideoRpm').value;
+            const dur = document.getElementById('modalVideoDur').value;
+            const statusMsg = document.getElementById('modalVideoStatus');
+            const btn = document.getElementById('btnModalGenVideo');
+
+            btn.disabled = true;
+            statusMsg.innerText = `🎬 Voxelizing & encoding 1080p Tomo-grade projection film (${dur}s @ ${rpm} RPM) ...`;
+
+            try {
+                const res = await fetch(`/api/generate_video?run_id=${selectedRunId}&geometry=${activeModalGeom}&rpm=${rpm}&duration=${dur}`);
+                const data = await res.json();
+                if (data.success) {
+                    statusMsg.innerText = `✅ 1080p Film Generated Successfully! (${(data.size_bytes/1024/1024).toFixed(2)} MB)`;
+                    const playerBox = document.getElementById('modalVideoPlayerBox');
+                    const player = document.getElementById('modalVideoPlayer');
+                    const dlBtn = document.getElementById('modalVideoDlBtn');
+                    const mfBtn = document.getElementById('modalManifestDlBtn');
+
+                    player.src = data.video_url + "&t=" + new Date().getTime();
+                    dlBtn.href = data.video_url;
+                    dlBtn.download = data.filename;
+                    mfBtn.href = `/api/export_manifest?run_id=${selectedRunId}`;
+                    mfBtn.download = `manifest_${selectedRunId}.json`;
+                    playerBox.style.display = 'flex';
+                    player.play();
+                } else {
+                    statusMsg.innerText = "❌ Error: " + (data.error || "Generation failed.");
+                }
+            } catch (err) {
+                statusMsg.innerText = "❌ Request error: " + err.message;
+            } finally {
+                btn.disabled = false;
             }
         }
 
