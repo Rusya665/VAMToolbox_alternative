@@ -1837,6 +1837,7 @@ HTML_TEMPLATE = r"""
 
         let activeBestConfigs = {};
         let activeModalGeom = "";
+        let activeModalRunId = "";
 
         function renderBestConfigs(bestMap) {
             activeBestConfigs = bestMap;
@@ -1849,7 +1850,7 @@ HTML_TEMPLATE = r"""
                 div.style.padding = "12px 14px";
                 div.style.borderRadius = "10px";
                 div.style.border = "1px solid var(--border-color)";
-                div.onclick = () => openRecipeModal(geom);
+                div.onclick = () => openRecipeModal(geom, selectedRunId);
                 div.innerHTML = `
                     <div style="display: flex; justify-content: space-between; font-weight: 700; margin-bottom: 3px;">
                         <span style="color: var(--accent-cyan); text-transform: uppercase;">${geom}</span>
@@ -1867,8 +1868,9 @@ HTML_TEMPLATE = r"""
             }
         }
 
-        function openRecipeModal(geom) {
+        function openRecipeModal(geom, runId) {
             activeModalGeom = geom;
+            activeModalRunId = runId || selectedRunId;
             const rec = activeBestConfigs[geom] || {};
             const overlay = document.getElementById('recipeModalOverlay');
             document.getElementById('modalTitle').innerText = `${geom.toUpperCase()} — Complete Tomo Recipe`;
@@ -1936,8 +1938,9 @@ HTML_TEMPLATE = r"""
             btn.disabled = true;
             statusMsg.innerText = `🎬 Voxelizing & encoding 1080p Tomo-grade projection film (${dur}s @ ${rpm} RPM) ...`;
 
+            const targetRunId = activeModalRunId || selectedRunId;
             try {
-                const res = await fetch(`/api/generate_video?run_id=${selectedRunId}&geometry=${activeModalGeom}&rpm=${rpm}&duration=${dur}`);
+                const res = await fetch(`/api/generate_video?run_id=${targetRunId}&geometry=${activeModalGeom}&rpm=${rpm}&duration=${dur}`);
                 const data = await res.json();
                 if (data.success) {
                     statusMsg.innerText = `✅ 1080p Film Generated Successfully! (${(data.size_bytes/1024/1024).toFixed(2)} MB)`;
@@ -1949,8 +1952,8 @@ HTML_TEMPLATE = r"""
                     player.src = data.video_url + "&t=" + new Date().getTime();
                     dlBtn.href = data.video_url;
                     dlBtn.download = data.filename;
-                    mfBtn.href = `/api/export_manifest?run_id=${selectedRunId}`;
-                    mfBtn.download = `manifest_${selectedRunId}.json`;
+                    mfBtn.href = `/api/export_manifest?run_id=${targetRunId}`;
+                    mfBtn.download = `manifest_${targetRunId}.json`;
                     playerBox.style.display = 'flex';
                     player.play();
                 } else {
