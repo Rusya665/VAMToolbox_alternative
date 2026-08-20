@@ -10,5 +10,12 @@ __pycache__/
 
 *_build*
 
-
 vamtoolbox/test
+
+# Generated experiment runs, videos, logs, and user uploads
+vam_tuning_studio/runs/
+vam_tuning_studio/uploads/
+runs/
+uploads/
+*.mp4
+*.jsonl
