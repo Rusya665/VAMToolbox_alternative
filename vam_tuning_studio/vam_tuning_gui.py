@@ -284,8 +284,9 @@ def generate_projection_video(run_id: str, geom_name: str, rpm: float = 9.0, dur
     sino, recon, err = vam.optimize.optimize(target_geo, proj_geo, opts)
 
     # ── Tomo-Native High-Fidelity Video Maker Engine ──
-    proj_px_w, proj_px_h = 1920, 1080
-    proj_width_mm = 108.0   # Standard VAM projector FOV width in mm (matching Tomo)
+    # Projector in PORTRAIT (1080 wide x 1920 high) — VAM vials are taller than wide
+    proj_px_w, proj_px_h = 1080, 1920
+    proj_width_mm = 108.0   # Standard VAM projector FOV width in mm (matching Tomo: 0.1 mm/px)
     res_vox = int(best_row.get("resolution", 75))
 
     # Physical voxel pitch in mm per voxel
@@ -320,7 +321,7 @@ def generate_projection_video(run_id: str, geom_name: str, rpm: float = 9.0, dur
     )
 
     n_images = len(image_seq.images)
-    fps = 30.0
+    fps = 54.0  # Tomo-standard 54.0 FPS
     total_frames = max(1, int(round(fps * duration_sec)))
     deg_per_frame = rpm * 6.0 / fps
     W = iconfig.N_u
@@ -1791,10 +1792,25 @@ HTML_TEMPLATE = r"""
                 }
 
                 if (metricChart && allLogRecords.length > 0) {
-                    const recent = allLogRecords.slice(-50);
-                    metricChart.data.labels = recent.map((_, idx) => "#" + (allLogRecords.length - recent.length + idx + 1));
-                    metricChart.data.datasets[0].data = recent.map(r => r.pw);
-                    metricChart.data.datasets[1].data = recent.map(r => r.ver * 100);
+                    let runningBestPW = -999;
+                    let runningLowestVER = 999;
+                    const pwBestTrack = [];
+                    const verBestTrack = [];
+                    allLogRecords.forEach(r => {
+                        if (r.pw > runningBestPW) runningBestPW = r.pw;
+                        if (r.ver < runningLowestVER) runningLowestVER = r.ver;
+                        pwBestTrack.push(runningBestPW);
+                        verBestTrack.push(runningLowestVER * 100);
+                    });
+
+                    const sliceCount = Math.min(54, allLogRecords.length);
+                    const recentIndices = allLogRecords.slice(-sliceCount);
+                    const recentPW = pwBestTrack.slice(-sliceCount);
+                    const recentVER = verBestTrack.slice(-sliceCount);
+
+                    metricChart.data.labels = recentIndices.map((_, idx) => "#" + (allLogRecords.length - sliceCount + idx + 1));
+                    metricChart.data.datasets[0].data = recentPW;
+                    metricChart.data.datasets[1].data = recentVER;
                     metricChart.update();
                 }
 
