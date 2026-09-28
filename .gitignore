@@ -1,21 +1,21 @@
-.vscode/*
-*.egg-info
-
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
 
+.vscode/*
+*.egg-info
 *DELETE_*
 *DELETE*
-
 *_build*
-
 vamtoolbox/test
 
 # Generated experiment runs, videos, logs, and user uploads
-vam_tuning_studio/runs/
-vam_tuning_studio/uploads/
 runs/
 uploads/
+vam_tuning_studio/runs/
+vam_tuning_studio/uploads/
 *.mp4
+*.seg.mp4
 *.jsonl
+*.pkl
+*.npy

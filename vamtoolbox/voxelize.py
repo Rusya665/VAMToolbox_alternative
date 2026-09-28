@@ -637,12 +637,12 @@ def voxelizeTargetOpenGL(input_path, resolution, bodies="all", rot_angles=[0, 0,
 
     # Load and optionally rotate the full mesh
     raw = trimesh.load(input_path, force="mesh")
-    if np.any(rot_angles):
-        raw = rotate_mesh(raw, rot_angles)
-
-    # Split into connected components (1-indexed to match caller convention)
-    components = raw.split(only_watertight=False)
-    if len(components) == 0:
+    # Split into connected components only when specific bodies requested
+    if bodies != "all":
+        components = raw.split(only_watertight=False)
+        if len(components) == 0:
+            components = [raw]
+    else:
         components = [raw]
 
     # Global Z-fix derived from ALL components so every output array shares

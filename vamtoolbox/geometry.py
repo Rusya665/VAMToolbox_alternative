@@ -785,6 +785,7 @@ def compute_rebin_params(
     proj_u_px,
     proj_v_px,
     throw_ratio=1.0,
+    n_write=1.51,
 ):
     """
     Compute rebinFanBeam parameters and print a geometry summary for a given vial
@@ -806,6 +807,8 @@ def compute_rebin_params(
         Projector pixel count in the V (vial-height) direction.
     throw_ratio : float
         Projector throw ratio (throw distance / projected image width).
+    n_write : float, optional
+        Resin refractive index at writing wavelength (default: 1.51).
 
     Returns
     -------
@@ -814,7 +817,9 @@ def compute_rebin_params(
         N_screen       - pass directly as ``N_screen`` to rebinFanBeam
         size_scale     - pass as ``size_scale`` to ImageConfig so the rebinned
                          sinogram fills the projector U axis exactly
-        max_diam_mm    - maximum printable part diameter (mm)
+        max_diam_mm    - maximum geometric vial diameter (mm)
+        usable_diam_mm - maximum printable part diameter within green refraction cylinder (mm)
+        r_usable_mm    - maximum usable radius (r <= Rv / n) (mm)
         max_height_mm  - maximum printable part height (mm)
         resolution     - recommended Z resolution (slices that span max_height_mm)
         mm_per_pix_for_full_vial - mm_per_pix required so the full vial inner
@@ -825,6 +830,8 @@ def compute_rebin_params(
     vial_u_px = vial_id_mm / mm_per_pix
 
     max_diam_mm = min(vial_id_mm, fov_u_mm)
+    r_usable_mm = (vial_id_mm / 2.0) / max(float(n_write), 1.0)
+    usable_diam_mm = min(vial_id_mm / max(float(n_write), 1.0), fov_u_mm)
     max_height_mm = min(vial_print_height_mm, fov_v_mm)
     resolution = int(round(max_height_mm / mm_per_pix))
 
@@ -850,9 +857,11 @@ def compute_rebin_params(
     print(f"  Vial")
     print(f"    Inner diameter (ID)       : {vial_id_mm:.2f} mm  = {vial_u_px:.0f} px")
     print(f"    Usable print height       : {vial_print_height_mm:.2f} mm")
+    print(f"  Refraction Limits (n = {n_write:.3f})")
+    print(f"    Green Cylinder Printable  : {usable_diam_mm:.2f} mm  (r <= {r_usable_mm:.2f} mm)")
     print(f"  Maximum printable part")
     print(
-        f"    Diameter                  : {max_diam_mm:.2f} mm  ({int(round(max_diam_mm / mm_per_pix))} px)"
+        f"    Diameter (optics limit)   : {max_diam_mm:.2f} mm  ({int(round(max_diam_mm / mm_per_pix))} px)"
     )
     print(f"    Height                    : {max_height_mm:.2f} mm  ({resolution} px)")
     print(f"  rebinFanBeam parameters")
@@ -886,6 +895,8 @@ def compute_rebin_params(
         "N_screen": (proj_u_px, proj_v_px),
         "size_scale": size_scale,
         "max_diam_mm": max_diam_mm,
+        "usable_diam_mm": usable_diam_mm,
+        "r_usable_mm": r_usable_mm,
         "max_height_mm": max_height_mm,
         "resolution": resolution,
         "mm_per_pix_for_full_vial": mm_per_pix_for_full_vial,

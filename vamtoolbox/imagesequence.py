@@ -1,4 +1,6 @@
 import os
+import subprocess
+import tempfile
 from ctypes import ArgumentError
 
 import cv2
@@ -199,6 +201,8 @@ class ImageSeq:
         mode: str = "conventional",
         angle_increment_per_image: float | None = None,
         preview: bool = False,
+        fps: float = 54.0,
+        codec: str = "h264",
     ):
         """
         Parameters
@@ -213,67 +217,139 @@ class ImageSeq:
             number of times to loop the images in playback. In conventional mode, num_loops is equivalent to the number of rotations because the image set is assumed to span a full rotation.
 
         mode : str, optional
-            'conventional' mode: angle_increment_per_image is derived from number of images, assuming the image set span a full rotation.
-                            Video duration is proportional to num_loops. The argument angle_increment_per_image is ignored in this mode.
-            'prescribed' mode: angle_increment_per_image is prescribed. Assuming the video plays back the image set exactly once, regardless whether the image set span less or more than one rotation.
-                            The argument num_loops is ignored in this mode.
+            'conventional' mode: angle_increment_per_image is derived from number of images, assuming the image set spans a full rotation.
+                            Continuous angular sub-frame sampling (deg_per_frame = rot_vel / fps) is used.
+            'prescribed' mode: angle_increment_per_image is prescribed. Assuming the video plays back the image set exactly once.
 
         angle_increment_per_image : float, optional
             spacing of images (deg)
 
         preview : bool, optional
-            preview the video while the function exports the video
+            preview the video while exporting
 
+        fps : float, optional
+            frames per second for output video (default: 54.0)
+
+        codec : str, optional
+            video codec: 'h264' (default), 'h265', or 'mp4v'
         """
-        if self.images is None:
+        if self.images is None or len(self.images) == 0:
             raise Exception(
-                "Problem encountered creating images in ImageSeq initialization"
+                "Problem encountered: no images found in ImageSeq object"
             )
+
+        os.makedirs(os.path.dirname(os.path.abspath(save_path)), exist_ok=True)
+        n_images = len(self.images)
+        W = int(self.image_config.N_u)
+        H = int(self.image_config.N_v)
 
         if preview:
             cv2.namedWindow("Preview", cv2.WINDOW_NORMAL)
 
         if mode == "conventional":
             assert angle_increment_per_image is None, (
-                "angle_increment_per_image must be None in conventional mode because it is derived from number of images in sinogram"
+                "angle_increment_per_image must be None in conventional mode because it is derived from sinogram angles"
             )
-            angle_increment_per_image = 360 / len(self.images)
-            num_image_per_rot = 360.0 / angle_increment_per_image
-            num_total_images = int(np.round(num_image_per_rot * num_loops))
+            total_duration_s = (360.0 / max(abs(rot_vel), 1e-6)) * num_loops
+            total_frames = max(1, int(round(fps * total_duration_s)))
+            deg_per_frame = rot_vel / max(fps, 1e-6)
+
+            def _get_frame_rgb(k):
+                angle = (k * deg_per_frame) % 360.0
+                idx = int(angle / 360.0 * n_images) % n_images
+                # np.flipud to match physical DLP projector optics (bottom-origin)
+                g = np.flipud(self.images[idx])
+                return np.repeat(g[:, :, None], 3, axis=2)
+
+            fpr = (360.0 * fps / max(abs(rot_vel), 1e-6))
+            n_unique = int(round(fpr))
+            n_loops_calc = int(round(total_frames / n_unique)) if n_unique > 0 else 0
+            fast = (n_unique >= 2 and n_loops_calc >= 2 and abs(fpr - n_unique) < 1e-3)
+
         elif mode == "prescribed":
             assert angle_increment_per_image is not None, (
-                "angle_increment_per_image must be None in conventional mode because it is derived from number of images in sinogram"
+                "angle_increment_per_image must be prescribed in prescribed mode"
             )
-            num_total_images = int(len(self.images) * num_loops)
+            image_time = angle_increment_per_image / max(abs(rot_vel), 1e-6)
+            fps = 1.0 / image_time
+            total_frames = int(n_images * num_loops)
+            fast = False
+
+            def _get_frame_rgb(k):
+                idx = k % n_images
+                g = np.flipud(self.images[idx])
+                return np.repeat(g[:, :, None], 3, axis=2)
         else:
             raise Exception(
                 'mode argument is not valid. Either "conventional" or "prescribed"'
             )
 
-        image_time = angle_increment_per_image / rot_vel
-        fps = 1 / image_time
+        codec_map = {"h265": "libx265", "h264": "libx264", "mp4v": "mpeg4"}
+        ff_codec = codec_map.get(codec.lower(), "libx264")
 
-        codec = cv2.VideoWriter.fourcc(*"avc1")  # type: ignore
-        video_out = cv2.VideoWriter(
-            save_path,
-            codec,
-            fps,
-            (int(self.image_config.N_u), int(self.image_config.N_v)),
-            isColor=False,  # FIXME: This wasn't here before
-        )
+        # Try high-efficiency imageio-ffmpeg encoding with stream-loop support
+        try:
+            import imageio_ffmpeg
 
-        k = 0
-        while k < num_total_images:
-            image = self.images[k % len(self.images)]
-            video_out.write(image)
-            if preview:
-                cv2.imshow("Preview", image)
-                cv2.waitKey(1)
-            k += 1
-            if (k == 1) or (k % 5 == 0) or (k == num_total_images):
-                print(f"Writing video frame {k:4d}/{num_total_images:4d}...")
+            if fast:
+                seg_path = save_path + ".seg.mp4"
+                writer = imageio_ffmpeg.write_frames(
+                    seg_path, (W, H), fps=fps, codec=ff_codec,
+                    pix_fmt_in="rgb24", pix_fmt_out="yuv420p", macro_block_size=2, quality=6,
+                )
+                writer.send(None)
+                for k in range(n_unique):
+                    f_rgb = _get_frame_rgb(k)
+                    writer.send(np.ascontiguousarray(f_rgb, dtype=np.uint8).tobytes())
+                    if preview:
+                        cv2.imshow("Preview", f_rgb[:, :, ::-1])
+                        cv2.waitKey(1)
+                writer.close()
 
-        video_out.release()
+                exe = imageio_ffmpeg.get_ffmpeg_exe()
+                subprocess.run(
+                    [exe, "-y", "-stream_loop", str(n_loops_calc - 1), "-i", seg_path,
+                     "-c", "copy", "-fflags", "+genpts", save_path],
+                    check=True, capture_output=True
+                )
+                try:
+                    if os.path.exists(seg_path):
+                        os.remove(seg_path)
+                except Exception:
+                    pass
+                return save_path
+
+            # Standard sequential imageio-ffmpeg output
+            writer = imageio_ffmpeg.write_frames(
+                save_path, (W, H), fps=fps, codec=ff_codec,
+                pix_fmt_in="rgb24", pix_fmt_out="yuv420p", macro_block_size=2, quality=6,
+            )
+            writer.send(None)
+            for k in range(total_frames):
+                f_rgb = _get_frame_rgb(k)
+                writer.send(np.ascontiguousarray(f_rgb, dtype=np.uint8).tobytes())
+                if preview:
+                    cv2.imshow("Preview", f_rgb[:, :, ::-1])
+                    cv2.waitKey(1)
+                if (k == 0) or ((k + 1) % 50 == 0) or (k + 1 == total_frames):
+                    print(f"Writing video frame {k+1:4d}/{total_frames:4d}...")
+            writer.close()
+            return save_path
+
+        except Exception as exc:
+            # Robust fallback to OpenCV VideoWriter (3-channel BGR)
+            fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+            video_out = cv2.VideoWriter(save_path, fourcc, fps, (W, H), isColor=True)
+            for k in range(total_frames):
+                f_rgb = _get_frame_rgb(k)
+                video_out.write(f_rgb[:, :, ::-1])  # RGB -> BGR
+                if preview:
+                    cv2.imshow("Preview", f_rgb[:, :, ::-1])
+                    cv2.waitKey(1)
+                if (k == 0) or ((k + 1) % 50 == 0) or (k + 1 == total_frames):
+                    print(f"Writing video frame {k+1:4d}/{total_frames:4d} (cv2 fallback)...")
+            video_out.release()
+            return save_path
 
     def saveAsImages(
         self, save_dir: str, image_prefix: str = "image", image_type: str = ".png"

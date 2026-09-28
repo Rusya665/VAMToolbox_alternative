@@ -88,7 +88,7 @@ class PrintConfig:
     pi_concentration_mm: float = 4.0       # photoinitiator concentration (mM)
     proj_u_px: int = 1080
     proj_v_px: int = 1920
-    mm_per_pix: float = 76.0 / 1080
+    mm_per_pix: float = 108.0 / 1080       # 108.0 mm FOV -> 0.100 mm/px (matching Tomo/Optoma ML1080)
     throw_ratio: float = float("inf")      # inf = telecentric/collimated
     vial_print_height_mm: float = 93.6
 
@@ -350,7 +350,7 @@ class VAMPipeline:
             self._rebin_params = vamtoolbox.geometry.compute_rebin_params(
                 vial_id_mm=cfg.vial_radius_mm * 2, vial_print_height_mm=cfg.vial_print_height_mm,
                 mm_per_pix=cfg.mm_per_pix, proj_u_px=cfg.proj_u_px, proj_v_px=cfg.proj_v_px,
-                throw_ratio=cfg.throw_ratio)
+                throw_ratio=cfg.throw_ratio, n_write=cfg.resin_ri)
         return self._rebin_params
 
     def rebin(self):
@@ -366,6 +366,12 @@ class VAMPipeline:
             self._emit("rebin", 0.0, "upsampling to print resolution")
             up = zoom(sino.array, (inv, 1.0, inv), order=1).astype(np.float32)
             sino = vamtoolbox.geometry.Sinogram(up, self.sinogram.proj_geo)
+        # Check green usable cylinder refraction limit: r_usable = R_v / n_resin
+        r_usable_mm = cfg.vial_radius_mm / max(cfg.resin_ri, 1.0)
+        part_radius_mm = (sino.array.shape[0] / 2.0) * cfg.mm_per_pix
+        if part_radius_mm > r_usable_mm:
+            self._emit("rebin", 0.05, f"WARNING: part radius ({part_radius_mm:.1f}mm) exceeds refraction limit ({r_usable_mm:.1f}mm)")
+
         rp = self._rebin_params_compute()
         # Scale the sinogram to PROJECTOR sampling before rebinning.  The rebin's
         # refraction geometry is defined in projector pixels (vial spans vial_width_px),
@@ -402,8 +408,16 @@ class VAMPipeline:
         cfg = self.config
         rp = self._rebin_params_compute()
         self._emit("video", 0.0, "rendering projection video")
+        # Clamp size_scale = 1.0 when rebinned and fits on canvas to prevent double-scaling bug
+        if self.rebinned is not None:
+            if rp["vial_width_px"] <= cfg.proj_u_px:
+                effective_size_scale = 1.0
+            else:
+                effective_size_scale = cfg.proj_u_px / max(rp["vial_width_px"], 1)
+        else:
+            effective_size_scale = rp["size_scale"]
         img_cfg = vamtoolbox.imagesequence.ImageConfig(
-            (cfg.proj_u_px, cfg.proj_v_px), intensity_scale=1, size_scale=rp["size_scale"],
+            (cfg.proj_u_px, cfg.proj_v_px), intensity_scale=1, size_scale=effective_size_scale,
             array_num=1, array_offset=0, invert_v=False, v_offset=0,
             normalization_percentile=99.9)
         imgset = vamtoolbox.imagesequence.ImageSeq(img_cfg, sinogram=sino)
