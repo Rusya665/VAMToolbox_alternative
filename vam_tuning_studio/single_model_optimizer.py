@@ -40,6 +40,14 @@ VIAL_HEIGHT_MM = 60.0
 MAX_PRINTABLE_DIAMETER_MM = 25.0
 MAX_PRINTABLE_HEIGHT_MM = 50.0
 
+# Hardware detection: Auto-detect CUDA vs CPU sparse matrix
+try:
+    _HW_INFO = vam.util.hardware.detect_system()
+    CUDA_AVAILABLE = bool(_HW_INFO.get("cuda", False) and _HW_INFO.get("gpus"))
+except Exception:
+    CUDA_AVAILABLE = False
+
+
 
 def sanitize_val(v):
     """Recursively converts any numpy scalar or array into native Python primitives."""
@@ -378,7 +386,8 @@ def run_single_model_optimization_stream(stl_path: str,
 
         n_angles = int(t_cfg.get("n_angles", 360))
         angles = np.linspace(0, 360 - 360 / n_angles, n_angles)
-        proj_geo = vam.geometry.ProjectionGeometry(angles=angles, ray_type="parallel", CUDA=True)
+        proj_geo = vam.geometry.ProjectionGeometry(angles=angles, ray_type="parallel", CUDA=CUDA_AVAILABLE)
+        proj_geo.sparse = not CUDA_AVAILABLE
 
         method = str(t_cfg.get("method", "OSMO"))
         n_iter = int(t_cfg.get("n_iter", 5))

@@ -37,6 +37,7 @@ from single_model_optimizer import (
     DEFAULT_FPS,
     DEFAULT_RPM,
     DEFAULT_DURATION_S,
+    CUDA_AVAILABLE,
 )
 from tomo_video_engine import render_exact_tomo_video, extract_preview_frames
 from generate_charts import generate_single_model_charts
@@ -1229,7 +1230,13 @@ GUI_HTML = r"""
 # ─────────────────────────────────────────────────────────────────────────────
 @app.route("/")
 def index():
-    return render_template_string(GUI_HTML)
+    badge_text = "CUDA GPU ACTIVE" if CUDA_AVAILABLE else "CPU SPARSE MATRIX ACTIVE"
+    badge_class = "badge-primary" if CUDA_AVAILABLE else "badge-warning"
+    html = GUI_HTML.replace(
+        '<span id="hw-badge" class="badge badge-primary">CUDA GPU ACTIVE</span>',
+        f'<span id="hw-badge" class="badge {badge_class}">{badge_text}</span>'
+    )
+    return render_template_string(html)
 
 
 @app.route("/api/get_stl")
